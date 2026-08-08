@@ -42,6 +42,19 @@ const validLargeArrayMechanisms = new Set([
   'json-stringify'
 ])
 
+// Keywords that do not change the output, so a $ref carrying only these
+// can still be dereferenced directly instead of merged with its target.
+const IGNORED_REF_SIBLING_KEYWORDS = new Set([
+  '$ref',
+  '$comment',
+  'title',
+  'description',
+  'examples',
+  'deprecated',
+  'readOnly',
+  'writeOnly'
+])
+
 let schemaIdCounter = 0
 
 function isValidSchema (schema, name) {
@@ -59,7 +72,8 @@ function isValidSchema (schema, name) {
 }
 
 function resolveRef (context, location) {
-  const ref = location.schema.$ref
+  const refSchema = location.schema
+  const ref = refSchema.$ref
 
   let hashIndex = ref.indexOf('#')
   if (hashIndex === -1) {
@@ -74,12 +88,44 @@ function resolveRef (context, location) {
     throw new Error(`Cannot find reference "${ref}"`)
   }
 
-  const newLocation = new Location(schema, schemaId, jsonPointer)
+  let newLocation = new Location(schema, schemaId, jsonPointer)
   if (schema.$ref !== undefined) {
-    return resolveRef(context, newLocation)
+    newLocation = resolveRef(context, newLocation)
   }
 
-  return newLocation
+  const siblingSchema = {}
+  for (const key in refSchema) {
+    if (!IGNORED_REF_SIBLING_KEYWORDS.has(key)) {
+      siblingSchema[key] = refSchema[key]
+    }
+  }
+
+  if (Object.keys(siblingSchema).length === 0) {
+    return newLocation
+  }
+
+  const siblingLocation = new Location(
+    cloneOriginSchema(context, siblingSchema, location.schemaId),
+    location.schemaId,
+    location.jsonPointer
+  )
+
+  // Keyed by content, not by identity: a merged schema is cloned on every
+  // merge, so a recursive $ref would otherwise be merged again on each level.
+  const mergedSchemaKey = newLocation.getSchemaRef() + JSON.stringify(siblingLocation.schema)
+
+  let mergedSchemaId = context.mergedRefsIds.get(mergedSchemaKey)
+  if (mergedSchemaId === undefined) {
+    mergedSchemaId = `__fjs_merged_${schemaIdCounter++}`
+    try {
+      mergeLocations(context, mergedSchemaId, [newLocation, siblingLocation])
+    } catch {
+      return newLocation
+    }
+    context.mergedRefsIds.set(mergedSchemaKey, mergedSchemaId)
+  }
+
+  return getMergedLocation(context, mergedSchemaId)
 }
 
 function getMergedLocation (context, mergedSchemaId) {
@@ -161,6 +207,7 @@ function build (schema, options) {
     rootSchemaId: schema.$id || `__fjs_root_${schemaIdCounter++}`,
     validatorSchemasIds: new Set(),
     mergedSchemasIds: new Map(),
+    mergedRefsIds: new Map(),
     recursiveSchemas: new Set(),
     recursivePaths: new Set(),
     buildingSet: new Set(),
