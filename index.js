@@ -208,6 +208,7 @@ function build (schema, options) {
     refResolver: new RefResolver(),
     rootSchemaId: schema.$id || `__fjs_root_${schemaIdCounter++}`,
     validatorSchemasIds: new Set(),
+    validatorSchemaRefs: new Set(),
     mergedSchemasIds: new Map(),
     mergedRefsIds: new Map(),
     recursiveSchemas: new Set(),
@@ -304,7 +305,10 @@ function build (schema, options) {
   }
 
   const serializer = new Serializer(options)
-  const validator = new Validator(options.ajv)
+  const validator = new Validator(
+    options.ajv,
+    options.mode === 'standalone' && options.inlineValidators
+  )
 
   for (const schemaId of context.validatorSchemasIds) {
     const schema = context.refResolver.getSchema(schemaId)
@@ -314,6 +318,10 @@ function build (schema, options) {
     for (const [schemaId, schema] of Object.entries(dependencies)) {
       validator.addSchema(schema, schemaId)
     }
+  }
+
+  if (options.compileValidators) {
+    validator.compileSchemas(context.validatorSchemaRefs)
   }
 
   if (options.mode === 'debug') {
@@ -425,7 +433,12 @@ function buildExtraObjectPropertiesSerializer (context, location, addComma, objV
   const additionalPropertiesLocation = location.getPropertyLocation('additionalProperties')
   const additionalPropertiesSchema = additionalPropertiesLocation.schema
 
-  if (additionalPropertiesSchema !== undefined) {
+  // `additionalProperties: false` means every property that is not declared in
+  // `properties` nor matched by `patternProperties` is dropped, so no branch is
+  // emitted for it. Without this guard the `false` schema reaches buildValue,
+  // which serializes any boolean schema with `JSON.stringify(value)` and lets
+  // the property through.
+  if (additionalPropertiesSchema !== undefined && additionalPropertiesSchema !== false) {
     if (additionalPropertiesSchema === true) {
       code += `
         ${addComma}
@@ -543,12 +556,17 @@ function buildInnerObject (context, location, objVar) {
       const value = `value_${key.replace(/[^a-zA-Z0-9]/g, '_')}_${context.uid++}`
       const defaultValue = propertyLocation.schema.default
       const isRequired = requiredProperties.includes(key) // Should be false here but good to keep
+      // Select a complete prefix so the comma does not need a separate concatenation.
+      const propertyPrefix = sanitizedKey + ':'
+      const addProperty = needsRuntimeComma
+        ? `json += addComma_${localUid} ? ${JSON.stringify(',' + propertyPrefix)} : ${JSON.stringify(propertyPrefix)}
+           addComma_${localUid} = true`
+        : `json += ${JSON.stringify(propertyPrefix)}`
 
       code += `
           const ${value} = ${objVar}[${sanitizedKey}]
           if (${value} !== undefined) {
-            ${addComma}
-            json += ${JSON.stringify(sanitizedKey + ':')}
+            ${addProperty}
             ${buildValue(context, propertyLocation, `${value}`)}
           }`
 
@@ -1256,6 +1274,7 @@ function buildOneOf (context, location, input) {
 
     const nestedResult = buildValue(context, mergedLocation, input)
     const schemaRef = getValidatorSchemaRef(context, optionLocation)
+    context.validatorSchemaRefs.add(schemaRef)
 
     code += `
       ${index === 0 ? 'if' : 'else if'}(validator.validate("${schemaRef}", ${input})) {
@@ -1289,6 +1308,7 @@ function buildIfThenElse (context, location, input) {
 
   const ifLocation = location.getPropertyLocation('if')
   const ifSchemaRef = getValidatorSchemaRef(context, ifLocation)
+  context.validatorSchemaRefs.add(ifSchemaRef)
 
   const thenLocation = location.getPropertyLocation('then')
   let thenMergedSchemaId = context.mergedSchemasIds.get(thenSchema)

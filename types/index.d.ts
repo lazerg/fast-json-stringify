@@ -167,6 +167,12 @@ declare namespace build {
      */
     mode?: 'debug' | 'standalone'
     /**
+     * Embed Ajv-generated validators in standalone output instead of compiling schemas at runtime
+     *
+     * @default false
+     */
+    inlineValidators?: boolean
+    /**
      * Large arrays are defined as arrays containing, by default, `20000`
      * elements or more. That value can be adjusted via the option parameter
      * `largeArraySize`.
@@ -180,6 +186,14 @@ declare namespace build {
      * @default 'default'
      */
     largeArrayMechanism?: 'default' | 'json-stringify'
+    /**
+     * Eagerly compile the Ajv validators used by `anyOf`, `oneOf` and
+     * `if/then/else` at build time instead of on the first serialization
+     * that reaches them.
+     *
+     * @default false
+     */
+    compileValidators?: boolean
   }
 
   export const validLargeArrayMechanisms: string[]
